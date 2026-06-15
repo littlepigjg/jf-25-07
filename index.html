@@ -16,6 +16,7 @@
       </div>
       <nav class="tabs">
         <button class="tab-btn active" data-tab="realtime">实时监控</button>
+        <button class="tab-btn" data-tab="smart-alerts">智能告警</button>
         <button class="tab-btn" data-tab="history">历史记录</button>
         <button class="tab-btn" data-tab="files">日志文件</button>
       </nav>
@@ -202,6 +203,179 @@
                 <tr><td colspan="5" class="empty-state">暂无日志文件，请先启动记录</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-smart-alerts">
+        <div class="smart-alerts-panel">
+          <div class="panel-header">
+            <h3>📈 智能告警引擎</h3>
+            <div class="smart-alert-toggle">
+              <label class="toggle-switch">
+                <input type="checkbox" id="smartAlertsEnabled" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="toggle-label">启用智能告警</span>
+            </div>
+          </div>
+
+          <div class="smart-alert-config">
+            <div class="config-card">
+              <div class="config-header">
+              <h4>⚙️ 基线计算参数</h4>
+              </div>
+              <div class="config-body">
+                <div class="setting-item">
+                  <label>滑动窗口时长</label>
+                  <select id="windowDuration">
+                    <option value="900000">15 分钟</option>
+                    <option value="1800000">30 分钟</option>
+                    <option value="3600000" selected>1 小时</option>
+                    <option value="7200000">2 小时</option>
+                    <option value="14400000">4 小时</option>
+                  </select>
+                  <span class="setting-hint">用于计算基线的历史数据时间范围</span>
+                </div>
+                <div class="setting-item">
+                  <label>警告阈值 (标准差倍数)</label>
+                  <input type="range" id="warningThreshold" min="1" max="4" step="0.5" value="2">
+                  <span class="threshold-value" id="warningThresholdValue">2.0σ</span>
+                  <span class="setting-hint">偏离基线超过此值触发警告级别告警</span>
+                </div>
+                <div class="setting-item">
+                  <label>严重阈值 (标准差倍数)</label>
+                  <input type="range" id="criticalThreshold" min="2" max="6" step="0.5" value="3">
+                  <span class="threshold-value" id="criticalThresholdValue">3.0σ</span>
+                  <span class="setting-hint">偏离基线超过此值触发严重级别告警</span>
+                </div>
+                <div class="config-actions">
+                  <button class="btn btn-primary btn-sm" id="btnSaveSmartAlertConfig">保存配置</button>
+                  <button class="btn btn-secondary btn-sm" id="btnResetSmartAlert">重置历史数据</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="metrics-status-card">
+              <div class="config-header">
+                <h4>📊 当前基线状态</h4>
+              </div>
+              <div class="metrics-status-grid" id="metricsStatusGrid">
+                <div class="metric-status-item">
+                  <div class="metric-name">CPU使用率</div>
+                  <div class="metric-baseline">
+                    <span class="baseline-label">基线:</span>
+                    <span class="baseline-value" id="baselineCpu">-</span>
+                  </div>
+                  <div class="metric-stddev">
+                    <span class="stddev-label">标准差:</span>
+                    <span class="stddev-value" id="stddevCpu">-</span>
+                  </div>
+                  <div class="metric-data-points">
+                    <span class="data-points-label">数据点:</span>
+                    <span class="data-points-value" id="dataPointsCpu">-</span>
+                  </div>
+                </div>
+                <div class="metric-status-item">
+                  <div class="metric-name">内存使用率</div>
+                  <div class="metric-baseline">
+                    <span class="baseline-label">基线:</span>
+                    <span class="baseline-value" id="baselineMemory">-</span>
+                  </div>
+                  <div class="metric-stddev">
+                    <span class="stddev-label">标准差:</span>
+                    <span class="stddev-value" id="stddevMemory">-</span>
+                  </div>
+                  <div class="metric-data-points">
+                    <span class="data-points-label">数据点:</span>
+                    <span class="data-points-value" id="dataPointsMemory">-</span>
+                  </div>
+                </div>
+                <div class="metric-status-item">
+                  <div class="metric-name">磁盘使用率</div>
+                  <div class="metric-baseline">
+                    <span class="baseline-label">基线:</span>
+                    <span class="baseline-value" id="baselineDisk">-</span>
+                  </div>
+                  <div class="metric-stddev">
+                    <span class="stddev-label">标准差:</span>
+                    <span class="stddev-value" id="stddevDisk">-</span>
+                  </div>
+                  <div class="metric-data-points">
+                    <span class="data-points-label">数据点:</span>
+                    <span class="data-points-value" id="dataPointsDisk">-</span>
+                  </div>
+                </div>
+                <div class="metric-status-item">
+                  <div class="metric-name">网络上传</div>
+                  <div class="metric-baseline">
+                    <span class="baseline-label">基线:</span>
+                    <span class="baseline-value" id="baselineNetworkUp">-</span>
+                  </div>
+                  <div class="metric-stddev">
+                    <span class="stddev-label">标准差:</span>
+                    <span class="stddev-value" id="stddevNetworkUp">-</span>
+                  </div>
+                  <div class="metric-data-points">
+                    <span class="data-points-label">数据点:</span>
+                    <span class="data-points-value" id="dataPointsNetworkUp">-</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="baseline-chart-section">
+            <div class="chart-card">
+              <div class="chart-header">
+              <h4>📈 动态基线实时曲线</h4>
+              <div class="chart-metric-selector">
+                <select id="baselineChartMetric">
+                  <option value="cpu.usage">CPU 使用率</option>
+                  <option value="memory.usage">内存使用率</option>
+                  <option value="disk.usage">磁盘使用率</option>
+                  <option value="network.upMB">网络上传</option>
+                  <option value="network.downMB">网络下载</option>
+                </select>
+              </div>
+              </div>
+              <div class="chart-container" style="height: 300px;">
+                <canvas id="baselineChart"></canvas>
+              </div>
+              <div class="chart-legend">
+                <div class="legend-item">
+                  <span class="legend-color" style="background: #7c3aed;"></span>
+                  <span>实际值</span>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-color" style="background: #10b981;"></span>
+                  <span>基线 (均值)</span>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-color" style="background: #f59e0b; opacity: 0.3;"></span>
+                  <span>警告区间 (±2σ)</span>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-color" style="background: #ef4444; opacity: 0.3;"></span>
+                  <span>严重区间 (±3σ)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="alert-explanation">
+            <div class="explanation-card">
+              <h4>ℹ️ 统计告警原理</h4>
+              <div class="explanation-content">
+                <p><strong>统计方法：</strong>使用滑动窗口内的历史数据计算均值(μ)和标准差(σ)，当当前采样值偏离均值超过设定的阈值时触发告警。</p>
+                <p><strong>告警级别：</strong></p>
+                <ul>
+                  <li><span class="badge badge-warning">警告</span>：偏离基线 2σ ~ 3σ 之间</li>
+                  <li><span class="badge badge-critical">严重</span>：偏离基线超过 3σ</li>
+                </ul>
+                <p><strong>数据要求：</strong>至少需要 10 个历史数据点才能开始计算基线，数据不足时不会触发告警。</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>

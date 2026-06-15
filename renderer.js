@@ -3,6 +3,7 @@ const { ipcRenderer } = require('electron');
 let cpuMemoryChart;
 let networkChart;
 let historyChart;
+let baselineChart;
 let cpuData = [];
 let memoryData = [];
 let networkUpData = [];
@@ -17,6 +18,13 @@ let historyOffset = 0;
 let historyHasMore = false;
 let historyTotal = 0;
 let currentFiles = [];
+let currentBaselines = {};
+let currentSmartAlertOptions = {};
+let baselineChartMetric = 'cpu.usage';
+let baselineMetricHistory = [];
+let metricLabels = {};
+let metricUnits = {};
+let smartAlertsEnabled = true;
 
 document.addEventListener('DOMContentLoaded', () => {
   initCharts();
@@ -24,6 +32,8 @@ document.addEventListener('DOMContentLoaded', () => {
   ipcRenderer.send('get-thresholds');
   ipcRenderer.send('get-logging-status');
   ipcRenderer.send('get-alert-history');
+  ipcRenderer.send('get-smart-alert-options');
+  ipcRenderer.send('get-current-baselines');
   setDefaultDates();
 });
 
@@ -203,6 +213,114 @@ function initCharts() {
       }
     }
   });
+
+  const baselineCtx = document.getElementById('baselineChart').getContext('2d');
+  baselineChart = new Chart(baselineCtx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: '严重上限 (+3σ)',
+          data: [],
+          borderColor: 'transparent',
+          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+          borderWidth: 0,
+          fill: '+1',
+          tension: 0,
+          pointRadius: 0
+        },
+        {
+          label: '警告上限 (+2σ)',
+          data: [],
+          borderColor: 'transparent',
+          backgroundColor: 'rgba(245, 158, 11, 0.2)',
+          borderWidth: 0,
+          fill: '+1',
+          tension: 0,
+          pointRadius: 0
+        },
+        {
+          label: '基线 (均值)',
+          data: [],
+          borderColor: '#10b981',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          borderDash: [5, 5],
+          fill: false,
+          tension: 0,
+          pointRadius: 0
+        },
+        {
+          label: '警告下限 (-2σ)',
+          data: [],
+          borderColor: 'transparent',
+          backgroundColor: 'rgba(245, 158, 11, 0.2)',
+          borderWidth: 0,
+          fill: '+1',
+          tension: 0,
+          pointRadius: 0
+        },
+        {
+          label: '严重下限 (-3σ)',
+          data: [],
+          borderColor: 'transparent',
+          backgroundColor: 'rgba(239, 68, 68, 0.15)',
+          borderWidth: 0,
+          fill: false,
+          tension: 0,
+          pointRadius: 0
+        },
+        {
+          label: '实际值',
+          data: [],
+          borderColor: '#7c3aed',
+          backgroundColor: 'rgba(124, 58, 237, 0.1)',
+          borderWidth: 2,
+          fill: false,
+          tension: 0.4,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          zIndex: 10
+        }
+      ]
+    },
+    options: {
+      ...chartOptions,
+      scales: {
+        ...chartOptions.scales,
+        y: {
+          ...chartOptions.scales.y,
+          max: undefined,
+          min: undefined,
+          ticks: {
+            color: '#94a3b8',
+            font: { size: 10 }
+          }
+        }
+      },
+      plugins: {
+        ...chartOptions.plugins,
+        legend: {
+          display: false
+        },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            label: function(context) {
+              return context.dataset.label + ': ' + context.parsed.y.toFixed(2);
+            }
+          }
+        }
+      },
+      interaction: {
+        mode: 'nearest',
+        axis: 'x',
+        intersect: false
+      }
+    }
+  });
 }
 
 function bindEvents() {
@@ -285,6 +403,39 @@ function bindEvents() {
   document.getElementById('maxFileSize').addEventListener('input', (e) => {
     document.getElementById('maxFileSizeValue').textContent = e.target.value + ' MB';
   });
+
+  document.getElementById('warningThreshold').addEventListener('input', (e) => {
+    document.getElementById('warningThresholdValue').textContent = parseFloat(e.target.value).toFixed(1) + 'σ';
+    const criticalSlider = document.getElementById('criticalThreshold');
+    if (parseFloat(e.target.value) >= parseFloat(criticalSlider.value)) {
+      criticalSlider.value = parseFloat(e.target.value) + 0.5;
+      document.getElementById('criticalThresholdValue').textContent = parseFloat(criticalSlider.value).toFixed(1) + 'σ';
+    }
+  });
+
+  document.getElementById('criticalThreshold').addEventListener('input', (e) => {
+    document.getElementById('criticalThresholdValue').textContent = parseFloat(e.target.value).toFixed(1) + 'σ';
+    const warningSlider = document.getElementById('warningThreshold');
+    if (parseFloat(e.target.value) <= parseFloat(warningSlider.value)) {
+      warningSlider.value = parseFloat(e.target.value) - 0.5;
+      document.getElementById('warningThresholdValue').textContent = parseFloat(warningSlider.value).toFixed(1) + 'σ';
+    }
+  });
+
+  document.getElementById('baselineChartMetric').addEventListener('change', (e) => {
+    baselineChartMetric = e.target.value;
+    ipcRenderer.send('get-metric-history', {
+      metricKey: baselineChartMetric,
+      windowMs: 3600000
+    });
+  });
+
+  document.getElementById('smartAlertsEnabled').addEventListener('change', (e) => {
+    smartAlertsEnabled = e.target.checked;
+  });
+
+  document.getElementById('btnSaveSmartAlertConfig').addEventListener('click', saveSmartAlertConfig);
+  document.getElementById('btnResetSmartAlert').addEventListener('click', resetSmartAlertHistory);
 }
 
 function switchTab(tab) {
@@ -303,8 +454,76 @@ function switchTab(tab) {
 ipcRenderer.on('system-data', (event, data) => {
   updateStats(data);
   updateCharts(data);
+  updateBaselineChartWithRealtime(data);
   currentProcesses = data.topProcesses;
   renderProcesses(currentProcesses);
+});
+
+ipcRenderer.on('baselines-updated', (event, baselines) => {
+  currentBaselines = baselines;
+  updateMetricsStatus(baselines);
+  updateBaselineChartThresholds(baselines);
+});
+
+ipcRenderer.on('smart-alerts', (event, alerts) => {
+  alerts.forEach(alert => {
+    addAlert(alert);
+  });
+  
+  if (alerts.some(a => a.level === 'critical')) {
+    showToast('error', '严重告警：系统指标异常偏离基线！');
+  } else if (alerts.length > 0) {
+    showToast('warning', '告警：系统指标偏离基线');
+  }
+});
+
+ipcRenderer.on('smart-alert-options', (event, options) => {
+  currentSmartAlertOptions = options;
+  smartAlertsEnabled = options.useSmartAlerts !== false;
+  if (options.metricLabels) metricLabels = options.metricLabels;
+  if (options.metricUnits) metricUnits = options.metricUnits;
+  
+  document.getElementById('smartAlertsEnabled').checked = smartAlertsEnabled;
+  if (options.windowDurationMs) {
+    document.getElementById('windowDuration').value = options.windowDurationMs;
+  }
+  if (options.warningStdDevThreshold) {
+    document.getElementById('warningThreshold').value = options.warningStdDevThreshold;
+    document.getElementById('warningThresholdValue').textContent = parseFloat(options.warningStdDevThreshold).toFixed(1) + 'σ';
+  }
+  if (options.criticalStdDevThreshold) {
+    document.getElementById('criticalThreshold').value = options.criticalStdDevThreshold;
+    document.getElementById('criticalThresholdValue').textContent = parseFloat(options.criticalStdDevThreshold).toFixed(1) + 'σ';
+  }
+});
+
+ipcRenderer.on('smart-alert-options-updated', (event, options) => {
+  showToast('success', '智能告警配置已保存');
+  currentSmartAlertOptions = options;
+  smartAlertsEnabled = options.useSmartAlerts;
+});
+
+ipcRenderer.on('current-baselines', (event, baselines) => {
+  currentBaselines = baselines;
+  updateMetricsStatus(baselines);
+  updateBaselineChartThresholds(baselines);
+});
+
+ipcRenderer.on('metric-history', (event, result) => {
+  if (result.metricKey === baselineChartMetric) {
+    baselineMetricHistory = result.history;
+    renderBaselineChart(result.history, result.baseline);
+  }
+});
+
+ipcRenderer.on('smart-alert-history-reset', () => {
+  showToast('success', '历史数据已重置');
+  baselineMetricHistory = [];
+  baselineChart.data.labels = [];
+  baselineChart.data.datasets.forEach(ds => {
+    ds.data = [];
+  });
+  baselineChart.update('none');
 });
 
 ipcRenderer.on('alerts', (event, alerts) => {
@@ -868,4 +1087,126 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function updateMetricsStatus(baselines) {
+  const metricConfigs = [
+    { key: 'cpu.usage', name: 'cpu' },
+    { key: 'memory.usage', name: 'memory' },
+    { key: 'disk.usage', name: 'disk' },
+    { key: 'network.upMB', name: 'networkUp' }
+  ];
+
+  metricConfigs.forEach(config => {
+    const baseline = baselines[config.key];
+    if (baseline) {
+      const unit = metricUnits[config.key] || '%';
+      const baselineEl = document.getElementById(`baseline${config.name.charAt(0).toUpperCase() + config.name.slice(1)}`);
+      const stddevEl = document.getElementById(`stddev${config.name.charAt(0).toUpperCase() + config.name.slice(1)}`);
+      const dataPointsEl = document.getElementById(`dataPoints${config.name.charAt(0).toUpperCase() + config.name.slice(1)}`);
+
+      if (baselineEl) {
+        baselineEl.textContent = baseline.isValid ? `${baseline.mean.toFixed(2)}${unit}` : '计算中...';
+        baselineEl.style.color = baseline.isValid ? 'var(--success-color)' : 'var(--text-secondary)';
+      }
+      if (stddevEl) {
+        stddevEl.textContent = baseline.isValid ? `${baseline.stdDev.toFixed(2)}${unit}` : '-';
+      }
+      if (dataPointsEl) {
+        dataPointsEl.textContent = baseline.dataPoints;
+        dataPointsEl.style.color = baseline.isValid ? 'var(--text-primary)' : 'var(--text-secondary)';
+      }
+    }
+  });
+}
+
+function updateBaselineChartWithRealtime(data) {
+  const value = getNestedValue(data, baselineChartMetric);
+  if (value === null || value === undefined || isNaN(value)) return;
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  baselineMetricHistory.push({
+    timestamp: now.getTime(),
+    value
+  });
+
+  const maxPoints = 180;
+  if (baselineMetricHistory.length > maxPoints) {
+    baselineMetricHistory = baselineMetricHistory.slice(-maxPoints);
+  }
+
+  const baseline = currentBaselines[baselineChartMetric];
+  renderBaselineChart(baselineMetricHistory, baseline);
+}
+
+function updateBaselineChartThresholds(baselines) {
+  const baseline = baselines[baselineChartMetric];
+  if (baseline && baselineMetricHistory.length > 0) {
+    renderBaselineChart(baselineMetricHistory, baseline);
+  }
+}
+
+function renderBaselineChart(history, baseline) {
+  if (!baselineChart) return;
+
+  const chartData = history.slice(-120);
+  
+  baselineChart.data.labels = chartData.map(d => {
+    const dt = new Date(d.timestamp);
+    return dt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  });
+
+  baselineChart.data.datasets[5].data = chartData.map(d => d.value);
+
+  if (baseline && baseline.isValid) {
+    const warningThreshold = currentSmartAlertOptions.warningStdDevThreshold || 2;
+    const criticalThreshold = currentSmartAlertOptions.criticalStdDevThreshold || 3;
+
+    const meanVals = chartData.map(() => baseline.mean);
+    const warningUpper = chartData.map(() => baseline.mean + warningThreshold * baseline.stdDev);
+    const warningLower = chartData.map(() => baseline.mean - warningThreshold * baseline.stdDev);
+    const criticalUpper = chartData.map(() => baseline.mean + criticalThreshold * baseline.stdDev);
+    const criticalLower = chartData.map(() => baseline.mean - criticalThreshold * baseline.stdDev);
+
+    baselineChart.data.datasets[0].data = criticalUpper;
+    baselineChart.data.datasets[1].data = warningUpper;
+    baselineChart.data.datasets[2].data = meanVals;
+    baselineChart.data.datasets[3].data = warningLower;
+    baselineChart.data.datasets[4].data = criticalLower;
+  } else {
+    baselineChart.data.datasets[0].data = [];
+    baselineChart.data.datasets[1].data = [];
+    baselineChart.data.datasets[2].data = [];
+    baselineChart.data.datasets[3].data = [];
+    baselineChart.data.datasets[4].data = [];
+  }
+
+  baselineChart.update('none');
+}
+
+function saveSmartAlertConfig() {
+  const windowDurationMs = parseInt(document.getElementById('windowDuration').value);
+  const warningStdDevThreshold = parseFloat(document.getElementById('warningThreshold').value);
+  const criticalStdDevThreshold = parseFloat(document.getElementById('criticalThreshold').value);
+
+  ipcRenderer.send('update-smart-alert-options', {
+    useSmartAlerts: smartAlertsEnabled,
+    windowDurationMs,
+    warningStdDevThreshold,
+    criticalStdDevThreshold
+  });
+}
+
+function resetSmartAlertHistory() {
+  if (confirm('确定要重置所有历史数据吗？这将清除基线计算所需的历史数据。')) {
+    ipcRenderer.send('reset-smart-alert-history');
+  }
+}
+
+function getNestedValue(obj, path) {
+  return path.split('.').reduce((current, key) => {
+    return current && current[key] !== undefined ? current[key] : null;
+  }, obj);
 }

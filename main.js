@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const si = require('systeminformation');
 const path = require('path');
 const LogManager = require('./log-manager');
+const SmartAlertEngine = require('./smart-alert-engine');
 
 let mainWindow;
 let monitoringInterval = null;
@@ -18,6 +19,13 @@ let splitStrategy = 'daily';
 let maxFileSize = 50 * 1024 * 1024;
 
 let logManager = null;
+let smartAlertEngine = null;
+let useSmartAlerts = true;
+let smartAlertOptions = {
+  windowDurationMs: 60 * 60 * 1000,
+  warningStdDevThreshold: 2,
+  criticalStdDevThreshold: 3
+};
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -40,6 +48,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  initSmartAlertEngine();
   startMonitoring();
 
   app.on('activate', () => {
@@ -48,6 +57,28 @@ app.whenReady().then(() => {
     }
   });
 });
+
+function initSmartAlertEngine() {
+  smartAlertEngine = new SmartAlertEngine(smartAlertOptions);
+
+  smartAlertEngine.on('baselines-updated', (baselines) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('baselines-updated', baselines);
+    }
+  });
+
+  smartAlertEngine.on('alerts', (alerts) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('smart-alerts', alerts);
+    }
+    alerts.forEach(alert => {
+      alertHistory.unshift(alert);
+    });
+    if (alertHistory.length > 100) {
+      alertHistory = alertHistory.slice(0, 100);
+    }
+  });
+}
 
 app.on('window-all-closed', async () => {
   stopMonitoring();
@@ -68,7 +99,12 @@ function startMonitoring() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('system-data', data);
       }
-      checkAlerts(data);
+
+      if (useSmartAlerts && smartAlertEngine) {
+        smartAlertEngine.processDataPoint(data);
+      } else {
+        checkAlerts(data);
+      }
       
       if (logManager && logManager.isLogging) {
         logManager.addRecord(data);
@@ -388,4 +424,72 @@ ipcMain.on('delete-old-logs', async (event, daysToKeep) => {
 
 ipcMain.on('get-history-data', (event) => {
   event.reply('history-data', []);
+});
+
+ipcMain.on('get-smart-alert-options', (event) => {
+  event.reply('smart-alert-options', {
+    ...smartAlertOptions,
+    useSmartAlerts,
+    metricKeys: smartAlertEngine ? smartAlertEngine.getMetricKeys() : [],
+    metricLabels: smartAlertEngine ? smartAlertEngine.getMetricLabels() : {},
+    metricUnits: smartAlertEngine ? smartAlertEngine.getMetricUnits() : {}
+  });
+});
+
+ipcMain.on('update-smart-alert-options', (event, options) => {
+  if (options.useSmartAlerts !== undefined) {
+    useSmartAlerts = options.useSmartAlerts;
+  }
+
+  const engineOptions = {};
+  if (options.windowDurationMs !== undefined) {
+    engineOptions.windowDurationMs = options.windowDurationMs;
+    smartAlertOptions.windowDurationMs = options.windowDurationMs;
+  }
+  if (options.warningStdDevThreshold !== undefined) {
+    engineOptions.warningStdDevThreshold = options.warningStdDevThreshold;
+    smartAlertOptions.warningStdDevThreshold = options.warningStdDevThreshold;
+  }
+  if (options.criticalStdDevThreshold !== undefined) {
+    engineOptions.criticalStdDevThreshold = options.criticalStdDevThreshold;
+    smartAlertOptions.criticalStdDevThreshold = options.criticalStdDevThreshold;
+  }
+
+  if (smartAlertEngine && Object.keys(engineOptions).length > 0) {
+    smartAlertEngine.updateOptions(engineOptions);
+  }
+
+  event.reply('smart-alert-options-updated', {
+    ...smartAlertOptions,
+    useSmartAlerts
+  });
+});
+
+ipcMain.on('get-current-baselines', (event) => {
+  if (smartAlertEngine) {
+    event.reply('current-baselines', smartAlertEngine.getBaselines());
+  } else {
+    event.reply('current-baselines', {});
+  }
+});
+
+ipcMain.on('get-metric-history', (event, { metricKey, windowMs }) => {
+  if (smartAlertEngine) {
+    const history = smartAlertEngine.getMetricHistory(metricKey, windowMs);
+    const baselines = smartAlertEngine.getBaselines();
+    event.reply('metric-history', {
+      metricKey,
+      history,
+      baseline: baselines[metricKey] || null
+    });
+  } else {
+    event.reply('metric-history', { metricKey, history: [], baseline: null });
+  }
+});
+
+ipcMain.on('reset-smart-alert-history', (event) => {
+  if (smartAlertEngine) {
+    smartAlertEngine.reset();
+  }
+  event.reply('smart-alert-history-reset');
 });
